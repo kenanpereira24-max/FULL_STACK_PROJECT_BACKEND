@@ -10,7 +10,6 @@ require("dotenv").config();
 const app = express();
 const upload = multer({ dest: "uploads/" });
 
-// NUCLEAR CORS FIX: Allows Vercel to talk to Railway without being blocked
 app.use(
   cors({
     origin: "*",
@@ -40,13 +39,10 @@ try {
     });
     driveService = google.drive({ version: "v3", auth });
   }
-} catch (e) {
-  console.error("Google Drive Auth Error:", e);
-}
+} catch (e) {}
 
 const PARENT_FOLDER_ID = "17dDMHkoWFjy30ao7HutKbY7qiew1HKyu";
 
-// AUTH ENDPOINTS
 app.post("/api/signup", async (req, res) => {
   const { username, email, password } = req.body;
   try {
@@ -78,6 +74,16 @@ app.post("/api/login", async (req, res) => {
     if (result.rows.length === 0)
       return res.status(401).json({ error: "Invalid credentials" });
     const user = result.rows[0];
+
+    let userPlan = "Standard";
+    if (user.plan_id) {
+      const planRes = await pool.query(
+        "SELECT plan_name FROM plan WHERE plan_id = $1",
+        [user.plan_id],
+      );
+      if (planRes.rows.length > 0) userPlan = planRes.rows[0].plan_name;
+    }
+
     res
       .status(200)
       .json({
@@ -85,7 +91,7 @@ app.post("/api/login", async (req, res) => {
           id: user.user_id,
           username: user.name,
           email: user.e_mail,
-          plan: "Standard",
+          plan: userPlan,
         },
       });
   } catch (error) {
@@ -93,7 +99,43 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// FOLDER & FILE ENDPOINTS
+app.get("/api/profile/:username", async (req, res) => {
+  const { username } = req.params;
+  try {
+    const result = await pool.query(
+      "SELECT u.user_id, u.name, u.e_mail, u.password, p.plan_name FROM users u LEFT JOIN plan p ON u.plan_id = p.plan_id WHERE u.name = $1",
+      [username],
+    );
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Not found" });
+    const data = result.rows[0];
+    res
+      .status(200)
+      .json({
+        user_id: data.user_id,
+        name: data.name,
+        email: data.e_mail,
+        password: data.password,
+        plan: data.plan_name || "Standard",
+      });
+  } catch (error) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+app.post("/api/folders", async (req, res) => {
+  try {
+    const { name, userId } = req.body;
+    const result = await pool.query(
+      "INSERT INTO folder (folder_name, user_id) VALUES ($1, $2) RETURNING folder_id as id, folder_name as name",
+      [name, userId],
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: "Folder error" });
+  }
+});
+
 app.get("/api/folders/:userId", async (req, res) => {
   try {
     const result = await pool.query(
@@ -106,17 +148,98 @@ app.get("/api/folders/:userId", async (req, res) => {
   }
 });
 
+app.post("/api/files", async (req, res) => {
+  try {
+    const { name, size, userId, folderId, content } = req.body;
+    const result = await pool.query(
+      "INSERT INTO file (file_name, file_size, user_id, folder_id, content) VALUES ($1, $2, $3, $4, $5) RETURNING file_id as id",
+      [name, size, userId, folderId || null, content],
+    );
+    res.status(201).json({ id: result.rows[0].id });
+  } catch (error) {
+    res.status(500).json({ error: "File error" });
+  }
+});
+
 app.get("/api/files/:userId", async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT file_id as id, file_name as name, file_size as size, folder_id as "folderId", content FROM file WHERE user_id = $1',
       [req.params.userId],
     );
-    res.status(200).json(result.rows);
+    const files = result.rows.map((f) => {
+      const extMatch = f.name.match(/\.([^.]+)$/);
+      return { ...f, type: extMatch ? extMatch[1] : "file" };
+    });
+    res.status(200).json(files);
   } catch (error) {
     res.status(500).json({ error: "Fetch error" });
   }
 });
 
+app.put("/api/files/:id", async (req, res) => {
+  try {
+    const { content, size } = req.body;
+    await pool.query(
+      "UPDATE file SET content = $1, file_size = $2 WHERE file_id = $3",
+      [content, size, req.params.id],
+    );
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Save error" });
+  }
+});
+
+app.post("/api/upload", upload.single("file"), async (req, res) => {
+  if (!driveService) {
+    if (req.file && req.file.path) fs.unlinkSync(req.file.path);
+    return res.status(500).json({ error: "Drive error" });
+  }
+  try {
+    const response = await driveService.files.create({
+      resource: { name: req.file.originalname, parents: [PARENT_FOLDER_ID] },
+      media: {
+        mimeType: req.file.mimetype,
+        body: fs.createReadStream(req.file.path),
+      },
+      fields: "id",
+    });
+    const dbRes = await pool.query(
+      "INSERT INTO file (file_name, file_size, user_id, folder_id, content) VALUES ($1, $2, $3, $4, $5) RETURNING file_id",
+      [
+        req.file.originalname,
+        String(req.file.size),
+        req.body.userId,
+        req.body.folderId !== "null" ? req.body.folderId : null,
+        `GDrive ID: ${response.data.id}`,
+      ],
+    );
+    fs.unlinkSync(req.file.path);
+    res
+      .status(200)
+      .json({ fileId: response.data.id, dbFileId: dbRes.rows[0].file_id });
+  } catch (error) {
+    if (req.file && req.file.path) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: "Upload Failed" });
+  }
+});
+
+app.post("/api/share", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "INSERT INTO share (permission, user_id) VALUES ('viewer', $1) RETURNING share_id",
+      [req.body.userId],
+    );
+    res
+      .status(200)
+      .json({
+        share_id: result.rows[0].share_id,
+        link: `https://cloudsolutions.com/shared/${result.rows[0].share_id}`,
+      });
+  } catch (error) {
+    res.status(500).json({ error: "Share error" });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Backend live on ${PORT}`));
+app.listen(PORT, () => {});
