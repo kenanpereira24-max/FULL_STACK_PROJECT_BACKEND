@@ -134,13 +134,19 @@ app.put("/api/profile/plan", async (req, res) => {
   const { userId, newPlanName, isCustom, customAmount, customUnit } = req.body;
   try {
     let planNameToUse = newPlanName;
+    let storageLimit = null;
+    let price = null;
 
     if (isCustom) {
       const countRes = await pool.query(
         "SELECT COUNT(*) FROM plan WHERE plan_name LIKE 'Custom Plan%'",
       );
       const nextNum = parseInt(countRes.rows[0].count) + 1;
-      planNameToUse = `Custom Plan ${nextNum} (${customAmount} ${customUnit})`;
+      planNameToUse = `Custom Plan ${nextNum}`;
+      storageLimit = `${customAmount}${customUnit}`;
+
+      const amountNum = parseInt(customAmount);
+      price = customUnit === "PB" ? amountNum * 15360 : amountNum * 15;
     }
 
     let planId;
@@ -157,11 +163,19 @@ app.put("/api/profile/plan", async (req, res) => {
       );
       const nextPlanId = parseInt(maxIdRes.rows[0].max_id) + 1;
 
-      const insertRes = await pool.query(
-        "INSERT INTO plan (plan_id, plan_name) VALUES ($1, $2) RETURNING plan_id",
-        [nextPlanId, planNameToUse],
-      );
-      planId = insertRes.rows[0].plan_id;
+      if (isCustom) {
+        const insertRes = await pool.query(
+          "INSERT INTO plan (plan_id, plan_name, storage_limit, price) VALUES ($1, $2, $3, $4) RETURNING plan_id",
+          [nextPlanId, planNameToUse, storageLimit, price],
+        );
+        planId = insertRes.rows[0].plan_id;
+      } else {
+        const insertRes = await pool.query(
+          "INSERT INTO plan (plan_id, plan_name) VALUES ($1, $2) RETURNING plan_id",
+          [nextPlanId, planNameToUse],
+        );
+        planId = insertRes.rows[0].plan_id;
+      }
     }
 
     await pool.query("UPDATE users SET plan_id = $1 WHERE user_id = $2", [
@@ -170,7 +184,6 @@ app.put("/api/profile/plan", async (req, res) => {
     ]);
     res.status(200).json({ success: true, planName: planNameToUse });
   } catch (error) {
-    console.error("Plan Update Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
