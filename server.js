@@ -15,7 +15,7 @@ app.use(
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 app.use(express.json());
@@ -48,7 +48,7 @@ app.post("/api/signup", async (req, res) => {
   try {
     const result = await pool.query(
       "INSERT INTO users (name, e_mail, password) VALUES ($1, $2, $3) RETURNING user_id, name, e_mail",
-      [username, email, password]
+      [username, email, password],
     );
     res.status(201).json({
       user: {
@@ -67,7 +67,7 @@ app.post("/api/login", async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT * FROM users WHERE (name = $1 OR e_mail = $1) AND password = $2",
-      [identifier, password]
+      [identifier, password],
     );
     if (result.rows.length === 0)
       return res.status(401).json({ error: "Invalid credentials" });
@@ -77,7 +77,7 @@ app.post("/api/login", async (req, res) => {
     if (user.plan_id) {
       const planRes = await pool.query(
         "SELECT plan_name FROM plan WHERE plan_id = $1",
-        [user.plan_id]
+        [user.plan_id],
       );
       if (planRes.rows.length > 0) userPlan = planRes.rows[0].plan_name;
     }
@@ -100,7 +100,7 @@ app.get("/api/profile/:username", async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT u.user_id, u.name, u.e_mail, u.password, p.plan_name FROM users u LEFT JOIN plan p ON u.plan_id = p.plan_id WHERE u.name = $1",
-      [username]
+      [username],
     );
     if (result.rows.length === 0)
       return res.status(404).json({ error: "Not found" });
@@ -117,12 +117,46 @@ app.get("/api/profile/:username", async (req, res) => {
   }
 });
 
+app.put("/api/profile/password", async (req, res) => {
+  const { userId, newPassword } = req.body;
+  try {
+    await pool.query("UPDATE users SET password = $1 WHERE user_id = $2", [
+      newPassword,
+      userId,
+    ]);
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update password" });
+  }
+});
+
+app.put("/api/profile/plan", async (req, res) => {
+  const { userId, newPlanName } = req.body;
+  try {
+    const planRes = await pool.query(
+      "SELECT plan_id FROM plan WHERE plan_name = $1",
+      [newPlanName],
+    );
+    if (planRes.rows.length === 0)
+      return res.status(404).json({ error: "Plan not found in database" });
+    const planId = planRes.rows[0].plan_id;
+
+    await pool.query("UPDATE users SET plan_id = $1 WHERE user_id = $2", [
+      planId,
+      userId,
+    ]);
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update plan" });
+  }
+});
+
 app.post("/api/folders", async (req, res) => {
   try {
     const { name, userId } = req.body;
     const result = await pool.query(
       "INSERT INTO folder (folder_name, user_id) VALUES ($1, $2) RETURNING folder_id as id, folder_name as name",
-      [name, userId]
+      [name, userId],
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -134,7 +168,7 @@ app.get("/api/folders/:userId", async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT folder_id as id, folder_name as name FROM folder WHERE user_id = $1",
-      [req.params.userId]
+      [req.params.userId],
     );
     res.status(200).json(result.rows);
   } catch (error) {
@@ -144,10 +178,10 @@ app.get("/api/folders/:userId", async (req, res) => {
 
 app.post("/api/files", async (req, res) => {
   try {
-    const { name, size, userId, folderId, content } = req.body;
+    const { name, size, userId, folderId, folderName, content } = req.body;
     const result = await pool.query(
-      "INSERT INTO file (file_name, file_size, user_id, folder_id, content) VALUES ($1, $2, $3, $4, $5) RETURNING file_id as id",
-      [name, size, userId, folderId || null, content]
+      "INSERT INTO file (file_name, file_size, user_id, folder_id, folder_name, content) VALUES ($1, $2, $3, $4, $5, $6) RETURNING file_id as id",
+      [name, size, userId, folderId || null, folderName || null, content],
     );
     res.status(201).json({ id: result.rows[0].id });
   } catch (error) {
@@ -158,8 +192,8 @@ app.post("/api/files", async (req, res) => {
 app.get("/api/files/:userId", async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT file_id as id, file_name as name, file_size as size, folder_id as "folderId", content FROM file WHERE user_id = $1',
-      [req.params.userId]
+      'SELECT file_id as id, file_name as name, file_size as size, folder_id as "folderId", folder_name as "folderName", content FROM file WHERE user_id = $1',
+      [req.params.userId],
     );
     const files = result.rows.map((f) => {
       const extMatch = f.name.match(/\.([^.]+)$/);
@@ -176,7 +210,7 @@ app.put("/api/files/:id", async (req, res) => {
     const { content, size } = req.body;
     await pool.query(
       "UPDATE file SET content = $1, file_size = $2 WHERE file_id = $3",
-      [content, size, req.params.id]
+      [content, size, req.params.id],
     );
     res.status(200).json({ success: true });
   } catch (error) {
@@ -199,14 +233,15 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       fields: "id",
     });
     const dbRes = await pool.query(
-      "INSERT INTO file (file_name, file_size, user_id, folder_id, content) VALUES ($1, $2, $3, $4, $5) RETURNING file_id",
+      "INSERT INTO file (file_name, file_size, user_id, folder_id, folder_name, content) VALUES ($1, $2, $3, $4, $5, $6) RETURNING file_id",
       [
         req.file.originalname,
         String(req.file.size),
         req.body.userId,
-        req.body.folderId !== "null" ? req.body.folderId : null,
+        req.body.folderId !== "null" ? parseInt(req.body.folderId) : null,
+        req.body.folderName !== "null" ? req.body.folderName : null,
         `GDrive ID: ${response.data.id}`,
-      ]
+      ],
     );
     fs.unlinkSync(req.file.path);
     res
@@ -221,18 +256,27 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 app.post("/api/share", async (req, res) => {
   const { fileId, sharedWithEmail, permission, ownerId } = req.body;
   try {
-    const userRes = await pool.query("SELECT user_id FROM users WHERE e_mail = $1", [sharedWithEmail]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: "User email not found in system" });
+    const userRes = await pool.query(
+      "SELECT user_id FROM users WHERE e_mail = $1",
+      [sharedWithEmail],
+    );
+    if (userRes.rows.length === 0)
+      return res.status(404).json({ error: "User email not found in system" });
     const targetUserId = userRes.rows[0].user_id;
 
     if (permission === "owner") {
-      await pool.query("UPDATE file SET user_id = $1 WHERE file_id = $2 AND user_id = $3", [targetUserId, fileId, ownerId]);
-      return res.status(200).json({ message: "Ownership completely transferred to new user." });
+      await pool.query(
+        "UPDATE file SET user_id = $1 WHERE file_id = $2 AND user_id = $3",
+        [targetUserId, fileId, ownerId],
+      );
+      return res
+        .status(200)
+        .json({ message: "Ownership completely transferred to new user." });
     }
 
     const result = await pool.query(
       "INSERT INTO share (file_id, owner_id, shared_with_user_id, permission) VALUES ($1, $2, $3, $4) RETURNING share_id",
-      [fileId, ownerId, targetUserId, permission]
+      [fileId, ownerId, targetUserId, permission],
     );
     res.status(200).json({
       share_id: result.rows[0].share_id,
