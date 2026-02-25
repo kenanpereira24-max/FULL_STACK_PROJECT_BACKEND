@@ -46,15 +46,22 @@ const PARENT_FOLDER_ID = "17dDMHkoWFjy30ao7HutKbY7qiew1HKyu";
 app.post("/api/signup", async (req, res) => {
   const { username, email, password } = req.body;
   try {
+    const planRes = await pool.query(
+      "SELECT plan_id FROM plan WHERE plan_name = 'Free Plan'",
+    );
+    const defaultPlanId =
+      planRes.rows.length > 0 ? planRes.rows[0].plan_id : null;
+
     const result = await pool.query(
-      "INSERT INTO users (name, e_mail, password) VALUES ($1, $2, $3) RETURNING user_id, name, e_mail",
-      [username, email, password],
+      "INSERT INTO users (name, e_mail, password, plan_id) VALUES ($1, $2, $3, $4) RETURNING user_id, name, e_mail",
+      [username, email, password, defaultPlanId],
     );
     res.status(201).json({
       user: {
         id: result.rows[0].user_id,
         username: result.rows[0].name,
         email: result.rows[0].e_mail,
+        plan: "Free Plan",
       },
     });
   } catch (error) {
