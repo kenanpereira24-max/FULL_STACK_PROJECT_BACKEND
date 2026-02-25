@@ -133,13 +133,21 @@ app.put("/api/profile/password", async (req, res) => {
 app.put("/api/profile/plan", async (req, res) => {
   const { userId, newPlanName } = req.body;
   try {
+    let planId;
     const planRes = await pool.query(
       "SELECT plan_id FROM plan WHERE plan_name = $1",
       [newPlanName],
     );
-    if (planRes.rows.length === 0)
-      return res.status(404).json({ error: "Plan not found in database" });
-    const planId = planRes.rows[0].plan_id;
+
+    if (planRes.rows.length > 0) {
+      planId = planRes.rows[0].plan_id;
+    } else {
+      const insertRes = await pool.query(
+        "INSERT INTO plan (plan_name) VALUES ($1) RETURNING plan_id",
+        [newPlanName],
+      );
+      planId = insertRes.rows[0].plan_id;
+    }
 
     await pool.query("UPDATE users SET plan_id = $1 WHERE user_id = $2", [
       planId,
