@@ -131,20 +131,35 @@ app.put("/api/profile/password", async (req, res) => {
 });
 
 app.put("/api/profile/plan", async (req, res) => {
-  const { userId, newPlanName } = req.body;
+  const { userId, newPlanName, isCustom, customAmount, customUnit } = req.body;
   try {
+    let planNameToUse = newPlanName;
+
+    if (isCustom) {
+      const countRes = await pool.query(
+        "SELECT COUNT(*) FROM plan WHERE plan_name LIKE 'Custom Plan%'",
+      );
+      const nextNum = parseInt(countRes.rows[0].count) + 1;
+      planNameToUse = `Custom Plan ${nextNum} (${customAmount} ${customUnit})`;
+    }
+
     let planId;
     const planRes = await pool.query(
       "SELECT plan_id FROM plan WHERE plan_name = $1",
-      [newPlanName],
+      [planNameToUse],
     );
 
     if (planRes.rows.length > 0) {
       planId = planRes.rows[0].plan_id;
     } else {
+      const maxIdRes = await pool.query(
+        "SELECT COALESCE(MAX(plan_id), 0) as max_id FROM plan",
+      );
+      const nextPlanId = parseInt(maxIdRes.rows[0].max_id) + 1;
+
       const insertRes = await pool.query(
-        "INSERT INTO plan (plan_name) VALUES ($1) RETURNING plan_id",
-        [newPlanName],
+        "INSERT INTO plan (plan_id, plan_name) VALUES ($1, $2) RETURNING plan_id",
+        [nextPlanId, planNameToUse],
       );
       planId = insertRes.rows[0].plan_id;
     }
@@ -153,9 +168,10 @@ app.put("/api/profile/plan", async (req, res) => {
       planId,
       userId,
     ]);
-    res.status(200).json({ success: true });
+    res.status(200).json({ success: true, planName: planNameToUse });
   } catch (error) {
-    res.status(500).json({ error: "Failed to update plan" });
+    console.error("Plan Update Error:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -296,6 +312,4 @@ app.post("/api/share", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => {});
